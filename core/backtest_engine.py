@@ -17,6 +17,7 @@ class BacktestEngine:
 
     def __init__(self, config: BacktestConfig):
         self.config = config
+        self.quiet_mode = False  # Флаг тихого режима
 
         # Numpy массивы для данных
         self.timestamps = None
@@ -34,9 +35,10 @@ class BacktestEngine:
         self.end_time = None
         self.total_pnl = 0.0
 
-    def run_backtest(self) -> bool:
+    def run_backtest(self, quiet_mode: bool = False) -> bool:
         """Запускает полный цикл оптимизированного бэктестирования"""
         try:
+            self.quiet_mode = quiet_mode  # Сохраняем флаг для всех методов
             self.start_time = time.time()
 
             # 1. Загружаем данные в numpy массивы
@@ -56,14 +58,18 @@ class BacktestEngine:
             self._calculate_results_vectorized()
 
             self.end_time = time.time()
-            self._print_results()
+
+            # Выводим результаты только если не тихий режим
+            if not quiet_mode:
+                self._print_results()
 
             return True
 
         except Exception as e:
-            print(f"Ошибка бэктестирования: {e}")
-            import traceback
-            traceback.print_exc()
+            if not quiet_mode:
+                print(f"Ошибка бэктестирования: {e}")
+                import traceback
+                traceback.print_exc()
             return False
 
     def _load_data_vectorized(self) -> bool:
@@ -87,8 +93,9 @@ class BacktestEngine:
                 data['close'].values
             ]).astype(np.float64)
 
-            print(f"Загружено {len(self.timestamps)} баров")
-            print(f"Период: {self.timestamps[0]} - {self.timestamps[-1]}")
+            if not self.quiet_mode:
+                print(f"Загружено {len(self.timestamps)} баров")
+                print(f"Период: {self.timestamps[0]} - {self.timestamps[-1]}")
 
             return True
 
@@ -117,8 +124,9 @@ class BacktestEngine:
         pivot_high_indices = np.where(pivot_high_mask)[0]
         pivot_low_indices = np.where(pivot_low_mask)[0]
 
-        print(f"Найдено pivot highs: {len(pivot_high_indices)}")
-        print(f"Найдено pivot lows: {len(pivot_low_indices)}")
+        if not self.quiet_mode:
+            print(f"Найдено pivot highs: {len(pivot_high_indices)}")
+            print(f"Найдено pivot lows: {len(pivot_low_indices)}")
 
         return pivot_high_indices, pivot_low_indices
 
@@ -274,8 +282,9 @@ class BacktestEngine:
             if se and current_low < lprice and current_position == "SHORT":
                 se = False
 
-        print(f"Сгенерировано сигналов: {len(self.signals)}")
-        print(f"Совершено сделок: {len(self.trades)}")
+        if not self.quiet_mode:
+            print(f"Сгенерировано сигналов: {len(self.signals)}")
+            print(f"Совершено сделок: {len(self.trades)}")
 
     def _open_position(self, direction: str, timestamp, entry_price: float) -> None:
         """Открывает позицию и записывает сигнал"""
