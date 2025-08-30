@@ -25,7 +25,7 @@ class PivotConfig:
 class DataConfig:
     """Конфигурация данных"""
     symbol: str = "ETHUSDT"
-    csv_path: str = "data/ethusdt_2025-08-01_2025-08-27.csv"
+    csv_path: str = "data/ethusdt_2024-01-01_2025-08-28.csv"
     timeframe: str = "1m"
 
 

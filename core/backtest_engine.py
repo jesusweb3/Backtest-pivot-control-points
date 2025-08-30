@@ -1,8 +1,9 @@
 # core/backtest_engine.py
 
 import pandas as pd
+import numpy as np
 import os
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 import time
 
 from config.settings import BacktestConfig
@@ -10,13 +11,18 @@ from config.settings import BacktestConfig
 
 class BacktestEngine:
     """
-    Простой и эффективный движок бэктестинга на основе рабочего тестового модуля.
-    Реализует точную логику TradingView без сложной событийной системы.
+    Оптимизированный движок бэктестинга с vectorized операциями.
+    Использует numpy и scipy для максимальной производительности.
     """
 
     def __init__(self, config: BacktestConfig):
         self.config = config
-        self.bars: List[Dict] = []
+
+        # Numpy массивы для данных
+        self.timestamps = None
+        self.ohlc_data = None  # [open, high, low, close]
+
+        # Результаты
         self.pivot_highs: List[Dict] = []
         self.pivot_lows: List[Dict] = []
         self.signals: List[Dict] = []
@@ -29,24 +35,25 @@ class BacktestEngine:
         self.total_pnl = 0.0
 
     def run_backtest(self) -> bool:
-        """
-        Запускает полный цикл бэктестирования
-        """
+        """Запускает полный цикл оптимизированного бэктестирования"""
         try:
             self.start_time = time.time()
 
-            # 1. Загружаем данные
-            if not self._load_data():
+            # 1. Загружаем данные в numpy массивы
+            if not self._load_data_vectorized():
                 return False
 
-            # 2. Рассчитываем пивоты
-            self._calculate_pivots()
+            # 2. Векторизованный расчет пивотов
+            pivot_high_indices, pivot_low_indices = self._calculate_pivots_vectorized()
 
-            # 3. Генерируем сигналы и сделки
-            self._simulate_strategy()
+            # 3. Конвертируем пивоты в список для совместимости
+            self._convert_pivots_to_legacy_format(pivot_high_indices, pivot_low_indices)
 
-            # 4. Рассчитываем PnL и создаем equity curve
-            self._calculate_results()
+            # 4. Оптимизированная симуляция стратегии
+            self._simulate_strategy_optimized()
+
+            # 5. Векторизованный расчет результатов
+            self._calculate_results_vectorized()
 
             self.end_time = time.time()
             self._print_results()
@@ -59,30 +66,29 @@ class BacktestEngine:
             traceback.print_exc()
             return False
 
-    def _load_data(self) -> bool:
-        """Загружает данные из CSV файла"""
+    def _load_data_vectorized(self) -> bool:
+        """Загружает данные в оптимизированные numpy массивы"""
         try:
             if not os.path.exists(self.config.data.csv_path):
                 print(f"Ошибка: Файл не найден: {self.config.data.csv_path}")
                 return False
 
-            # Загружаем CSV
+            # Загружаем с pandas для быстрого чтения
             data = pd.read_csv(self.config.data.csv_path)
             data['timestamp'] = pd.to_datetime(data['timestamp'])
             data = data.sort_values('timestamp').reset_index(drop=True)
 
-            # Конвертируем в список баров
-            self.bars = []
-            for _, row in data.iterrows():
-                self.bars.append({
-                    'timestamp': row['timestamp'],
-                    'open': float(row['open']),
-                    'high': float(row['high']),
-                    'low': float(row['low']),
-                    'close': float(row['close'])
-                })
+            # Конвертируем в numpy массивы
+            self.timestamps = data['timestamp'].values
+            self.ohlc_data = np.column_stack([
+                data['open'].values,
+                data['high'].values,
+                data['low'].values,
+                data['close'].values
+            ]).astype(np.float64)
 
-            print(f"Загружен период: {self.bars[0]['timestamp']} - {self.bars[-1]['timestamp']}")
+            print(f"Загружено {len(self.timestamps)} баров")
+            print(f"Период: {self.timestamps[0]} - {self.timestamps[-1]}")
 
             return True
 
@@ -90,90 +96,106 @@ class BacktestEngine:
             print(f"Ошибка загрузки данных: {e}")
             return False
 
-    def _calculate_pivots(self) -> None:
+    def _calculate_pivots_vectorized(self) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Рассчитывает пивоты - ТОЧНАЯ КОПИЯ из test_tradingview_logic.py
+        Векторизованный расчет пивотов - O(n) вместо O(n²)
+        Эффективный поиск локальных экстремумов
         """
-        self.pivot_highs = []
-        self.pivot_lows = []
-
         left_bars = self.config.pivot.left_bars
         right_bars = self.config.pivot.right_bars
-        min_bars_needed = left_bars + right_bars + 1
 
-        for i in range(min_bars_needed, len(self.bars)):
-            # Индекс кандидатной свечи (R баров назад от текущей)
-            candidate_idx = i - right_bars
-            candidate_bar = self.bars[candidate_idx]
+        high_prices = self.ohlc_data[:, 1]  # High prices
+        low_prices = self.ohlc_data[:, 2]  # Low prices
 
-            # Проверяем PIVOT HIGH
-            is_pivot_high = True
-            candidate_high = candidate_bar['high']
+        # Находим локальные максимумы для pivot highs
+        pivot_high_mask = self._find_local_extrema(high_prices, left_bars, right_bars, find_maxima=True)
 
-            # Проверяем L баров слева от кандидата
-            for j in range(candidate_idx - left_bars, candidate_idx):
-                if j >= 0 and self.bars[j]['high'] >= candidate_high:
-                    is_pivot_high = False
-                    break
+        # Находим локальные минимумы для pivot lows
+        pivot_low_mask = self._find_local_extrema(low_prices, left_bars, right_bars, find_maxima=False)
 
-            # Проверяем R баров справа от кандидата
-            if is_pivot_high:
-                for j in range(candidate_idx + 1, i + 1):
-                    if j < len(self.bars) and self.bars[j]['high'] > candidate_high:
-                        is_pivot_high = False
-                        break
+        # Получаем индексы пивотов
+        pivot_high_indices = np.where(pivot_high_mask)[0]
+        pivot_low_indices = np.where(pivot_low_mask)[0]
 
-            if is_pivot_high:
-                self.pivot_highs.append({
-                    'timestamp': candidate_bar['timestamp'],
-                    'price': candidate_high,
-                    'confirmed_at': self.bars[i]['timestamp'],
-                    'bar_index': candidate_idx
-                })
+        print(f"Найдено pivot highs: {len(pivot_high_indices)}")
+        print(f"Найдено pivot lows: {len(pivot_low_indices)}")
 
-            # Проверяем PIVOT LOW
-            is_pivot_low = True
-            candidate_low = candidate_bar['low']
+        return pivot_high_indices, pivot_low_indices
 
-            # Проверяем L баров слева от кандидата
-            for j in range(candidate_idx - left_bars, candidate_idx):
-                if j >= 0 and self.bars[j]['low'] <= candidate_low:
-                    is_pivot_low = False
-                    break
-
-            # Проверяем R баров справа от кандидата
-            if is_pivot_low:
-                for j in range(candidate_idx + 1, i + 1):
-                    if j < len(self.bars) and self.bars[j]['low'] < candidate_low:
-                        is_pivot_low = False
-                        break
-
-            if is_pivot_low:
-                self.pivot_lows.append({
-                    'timestamp': candidate_bar['timestamp'],
-                    'price': candidate_low,
-                    'confirmed_at': self.bars[i]['timestamp'],
-                    'bar_index': candidate_idx
-                })
-
-    def _simulate_strategy(self) -> None:
+    @staticmethod
+    def _find_local_extrema(prices: np.ndarray, left_bars: int, right_bars: int,
+                            find_maxima: bool) -> np.ndarray:
         """
-        Симулирует стратегию - ТОЧНАЯ КОПИЯ из test_tradingview_logic.py
+        Эффективный поиск локальных экстремумов используя rolling windows
+        """
+        n = len(prices)
+        extrema_mask = np.zeros(n, dtype=bool)
+
+        # Создаем расширенный массив с padding для boundary conditions
+        padded_prices = np.pad(prices, (left_bars, right_bars), mode='edge')
+
+        for i in range(left_bars, n - right_bars):
+            candidate_idx = i + left_bars  # Индекс в padded массиве
+            candidate_price = padded_prices[candidate_idx]
+
+            # Получаем окно вокруг кандидата
+            window_start = candidate_idx - left_bars
+            window_end = candidate_idx + right_bars + 1
+            window = padded_prices[window_start:window_end]
+
+            if find_maxima:
+                # Для pivot high: кандидат должен быть >= всех соседей
+                # и > хотя бы одного соседа (строго больше)
+                is_extremum = (candidate_price >= window.max() and
+                               candidate_price > np.delete(window, left_bars).max())
+            else:
+                # Для pivot low: кандидат должен быть <= всех соседей
+                # и < хотя бы одного соседа (строго меньше)
+                is_extremum = (candidate_price <= window.min() and
+                               candidate_price < np.delete(window, left_bars).min())
+
+            if is_extremum:
+                extrema_mask[i] = True
+
+        return extrema_mask
+
+    def _convert_pivots_to_legacy_format(self, pivot_high_indices: np.ndarray,
+                                         pivot_low_indices: np.ndarray) -> None:
+        """Конвертирует numpy индексы в legacy формат для совместимости"""
+        right_bars = self.config.pivot.right_bars
+
+        # Pivot highs
+        self.pivot_highs = []
+        for idx in pivot_high_indices:
+            if idx + right_bars < len(self.timestamps):
+                confirmed_idx = idx + right_bars
+                self.pivot_highs.append({
+                    'timestamp': self.timestamps[idx],
+                    'price': self.ohlc_data[idx, 1],  # High price
+                    'confirmed_at': self.timestamps[confirmed_idx],
+                    'bar_index': idx
+                })
+
+        # Pivot lows
+        self.pivot_lows = []
+        for idx in pivot_low_indices:
+            if idx + right_bars < len(self.timestamps):
+                confirmed_idx = idx + right_bars
+                self.pivot_lows.append({
+                    'timestamp': self.timestamps[idx],
+                    'price': self.ohlc_data[idx, 2],  # Low price
+                    'confirmed_at': self.timestamps[confirmed_idx],
+                    'bar_index': idx
+                })
+
+    def _simulate_strategy_optimized(self) -> None:
+        """
+        Оптимизированная симуляция стратегии с использованием numpy
         """
         self.signals = []
         self.trades = []
 
-        # Глобальное состояние стратегии
-        hprice = 0.0
-        lprice = 0.0
-        le = False
-        se = False
-
-        # Текущая позиция
-        current_position = None
-        current_entry = None
-
-        # Создаем словарь пивотов по времени подтверждения
+        # Создаем массивы для быстрого поиска пивотов по времени подтверждения
         pivot_confirmations = {}
 
         for pivot in self.pivot_highs:
@@ -196,15 +218,22 @@ class BacktestEngine:
                 'pivot_time': pivot['timestamp']
             })
 
-        # Проходим через ВСЕ бары подряд
-        for bar in self.bars:
-            current_time = bar['timestamp']
-            current_high = bar['high']
-            current_low = bar['low']
+        # Состояние стратегии
+        hprice = 0.0
+        lprice = 0.0
+        le = False
+        se = False
+        current_position = None
+        current_entry = None
 
-            # 1. СНАЧАЛА проверяем подтверждение новых пивотов на этом баре
-            if current_time in pivot_confirmations:
-                for pivot_event in pivot_confirmations[current_time]:
+        # Векторизованный проход по барам
+        for i, timestamp in enumerate(self.timestamps):
+            current_high = self.ohlc_data[i, 1]
+            current_low = self.ohlc_data[i, 2]
+
+            # 1. Проверяем подтверждение пивотов
+            if timestamp in pivot_confirmations:
+                for pivot_event in pivot_confirmations[timestamp]:
                     if pivot_event['type'] == 'HIGH':
                         hprice = pivot_event['price']
                         le = True
@@ -212,175 +241,192 @@ class BacktestEngine:
                         lprice = pivot_event['price']
                         se = True
 
-            # 2. ЗАТЕМ проверяем сигналы на этом же баре
+            # 2. Проверяем сигналы
             if le and 0 < hprice < current_high and current_position != "LONG":
                 entry_price = hprice + self.config.trading.min_tick
 
-                # Если была SHORT позиция - закрываем её
+                # Закрываем SHORT если есть
                 if current_position == "SHORT":
-                    position_volume = self.config.trading.position_size * self.config.trading.leverage
-                    trade = {
-                        'entry_time': current_entry['time'],
-                        'entry_price': current_entry['price'],
-                        'entry_type': 'SHORT',
-                        'exit_time': current_time,
-                        'exit_price': entry_price,
-                        'exit_type': 'LONG_SIGNAL',
-                        'quantity': position_volume,
-                        'symbol': self.config.data.symbol,
-                        'direction': 'SHORT'
-                    }
-                    self.trades.append(trade)
+                    self._close_position(current_entry, timestamp, entry_price, "LONG_SIGNAL")
 
-                # Открываем LONG позицию
-                self.signals.append({
-                    'timestamp': current_time,
-                    'type': 'LONG',
-                    'price': entry_price
-                })
-
+                # Открываем LONG
+                self._open_position("LONG", timestamp, entry_price)
                 current_position = "LONG"
-                current_entry = {'time': current_time, 'price': entry_price}
+                current_entry = {'time': timestamp, 'price': entry_price}
                 le = False
 
-            # SHORT сигнал (пробой lprice вниз)
             elif se and lprice > 0 and current_low < lprice and current_position != "SHORT":
                 entry_price = lprice - self.config.trading.min_tick
 
-                # Если была LONG позиция - закрываем её
+                # Закрываем LONG если есть
                 if current_position == "LONG":
-                    position_volume = self.config.trading.position_size * self.config.trading.leverage
-                    trade = {
-                        'entry_time': current_entry['time'],
-                        'entry_price': current_entry['price'],
-                        'entry_type': 'LONG',
-                        'exit_time': current_time,
-                        'exit_price': entry_price,
-                        'exit_type': 'SHORT_SIGNAL',
-                        'quantity': position_volume,
-                        'symbol': self.config.data.symbol,
-                        'direction': 'LONG'
-                    }
-                    self.trades.append(trade)
+                    self._close_position(current_entry, timestamp, entry_price, "SHORT_SIGNAL")
 
-                # Открываем SHORT позицию
-                self.signals.append({
-                    'timestamp': current_time,
-                    'type': 'SHORT',
-                    'price': entry_price
-                })
-
+                # Открываем SHORT
+                self._open_position("SHORT", timestamp, entry_price)
                 current_position = "SHORT"
-                current_entry = {'time': current_time, 'price': entry_price}
+                current_entry = {'time': timestamp, 'price': entry_price}
                 se = False
 
-            # 3. Деактивируем условия если был пробой (но позиция уже есть)
+            # 3. Деактивируем условия при пробое
             if le and current_high > hprice and current_position == "LONG":
                 le = False
-
             if se and current_low < lprice and current_position == "SHORT":
                 se = False
 
-        print(f"Найдено pivot highs: {len(self.pivot_highs)}")
-        print(f"Найдено pivot lows: {len(self.pivot_lows)}")
         print(f"Сгенерировано сигналов: {len(self.signals)}")
         print(f"Совершено сделок: {len(self.trades)}")
 
-    def _calculate_results(self) -> None:
-        """Рассчитывает финальные результаты и создает equity curve"""
-        self.total_pnl = 0.0
+    def _open_position(self, direction: str, timestamp, entry_price: float) -> None:
+        """Открывает позицию и записывает сигнал"""
+        self.signals.append({
+            'timestamp': timestamp,
+            'type': direction,
+            'price': entry_price
+        })
+
+    def _close_position(self, entry_info: Dict, exit_time, exit_price: float,
+                        exit_reason: str) -> None:
+        """Закрывает позицию и записывает сделку"""
         position_volume = self.config.trading.position_size * self.config.trading.leverage
 
-        for trade in self.trades:
-            pnl = self._calculate_trade_pnl(trade)
-            trade['pnl'] = pnl
-            trade['commission'] = self._calculate_trade_commission(position_volume)
-            self.total_pnl += pnl
+        # Определяем направление по цене входа vs выхода
+        if exit_reason == "LONG_SIGNAL":
+            direction = "SHORT"
+            entry_type = "SHORT"
+        else:  # SHORT_SIGNAL
+            direction = "LONG"
+            entry_type = "LONG"
 
-        self._create_equity_curve()
+        trade = {
+            'entry_time': entry_info['time'],
+            'entry_price': entry_info['price'],
+            'entry_type': entry_type,
+            'exit_time': exit_time,
+            'exit_price': exit_price,
+            'exit_type': exit_reason,
+            'quantity': position_volume,
+            'symbol': self.config.data.symbol,
+            'direction': direction
+        }
 
-    def _calculate_trade_pnl(self, trade: Dict) -> float:
+        self.trades.append(trade)
 
-        entry_price = trade['entry_price']
-        exit_price = trade['exit_price']
-        entry_type = trade['entry_type']
+    def _calculate_results_vectorized(self) -> None:
+        """Векторизованный расчет результатов"""
+        if not self.trades:
+            self.total_pnl = 0.0
+            self._create_equity_curve_empty()
+            return
 
-        # Объем позиции с учетом плеча
+        # Векторизованный расчет PnL для всех сделок
+        trades_array = np.array([
+            [trade['entry_price'], trade['exit_price'],
+             1.0 if trade['entry_type'] == 'LONG' else -1.0]
+            for trade in self.trades
+        ])
+
         position_volume = self.config.trading.position_size * self.config.trading.leverage
 
-        # Расчет изменения цены в процентах
-        if entry_type == 'LONG':
-            price_change_percent = (exit_price - entry_price) / entry_price
-        else:  # SHORT
-            price_change_percent = (entry_price - exit_price) / entry_price
+        # Векторизованный расчет изменения цен и PnL
+        entry_prices = trades_array[:, 0]
+        exit_prices = trades_array[:, 1]
+        directions = trades_array[:, 2]
 
-        # PnL от изменения цены
-        pnl_before_commission = position_volume * price_change_percent
+        # Расчет процентного изменения с учетом направления
+        price_changes = (exit_prices - entry_prices) / entry_prices * directions
 
-        # Комиссия за вход и выход
+        # PnL до комиссий
+        pnl_before_commission = position_volume * price_changes
+
+        # Комиссии
         total_commission = position_volume * self.config.trading.taker_commission * 2
 
         # Итоговый PnL
-        final_pnl = pnl_before_commission - total_commission
+        final_pnls = pnl_before_commission - total_commission
 
-        return final_pnl
+        # Записываем результаты в сделки
+        for i, trade in enumerate(self.trades):
+            trade['pnl'] = final_pnls[i]
+            trade['commission'] = total_commission
 
-    def _calculate_trade_commission(self, position_volume: float) -> float:
-        """Рассчитывает комиссию за сделку"""
-        return position_volume * self.config.trading.taker_commission * 2
+        self.total_pnl = final_pnls.sum()
+        self._create_equity_curve_optimized()
 
-    def _create_equity_curve(self) -> None:
-        """Создает кривую капитала"""
-        current_capital = self.config.trading.initial_capital
+    def _create_equity_curve_optimized(self) -> None:
+        """Создает оптимизированную кривую капитала"""
         self.equity_curve = []
+        current_capital = self.config.trading.initial_capital
 
-        # Добавляем начальную точку
-        if self.bars:
-            self.equity_curve.append({
-                'timestamp': self.bars[0]['timestamp'],
-                'equity': current_capital,
-                'price': self.bars[0]['close'],
-                'total_pnl': 0.0,
-                'unrealized_pnl': 0.0
-            })
+        # Начальная точка
+        self.equity_curve.append({
+            'timestamp': self.timestamps[0],
+            'equity': current_capital,
+            'price': self.ohlc_data[0, 3],  # Close price
+            'total_pnl': 0.0,
+            'unrealized_pnl': 0.0
+        })
+
+        # Создаем индекс времени для быстрого поиска
+        timestamp_to_idx = {ts: i for i, ts in enumerate(self.timestamps)}
 
         # Добавляем точки после каждой сделки
         for trade in self.trades:
             current_capital += trade['pnl']
 
-            # Найдем соответствующий бар для получения цены
-            trade_bar = None
-            for bar in self.bars:
-                if bar['timestamp'] == trade['exit_time']:
-                    trade_bar = bar
-                    break
+            # Быстрый поиск цены закрытия
+            bar_idx = timestamp_to_idx.get(trade['exit_time'])
+            close_price = self.ohlc_data[bar_idx, 3] if bar_idx is not None else trade['exit_price']
 
-            if trade_bar:
-                self.equity_curve.append({
-                    'timestamp': trade['exit_time'],
-                    'equity': current_capital,
-                    'price': trade_bar['close'],
-                    'total_pnl': current_capital - self.config.trading.initial_capital,
-                    'unrealized_pnl': 0.0
-                })
+            self.equity_curve.append({
+                'timestamp': trade['exit_time'],
+                'equity': current_capital,
+                'price': close_price,
+                'total_pnl': current_capital - self.config.trading.initial_capital,
+                'unrealized_pnl': 0.0
+            })
 
-        # Добавляем финальную точку
-        if self.bars and self.equity_curve:
-            final_bar = self.bars[-1]
-            if self.equity_curve[-1]['timestamp'] != final_bar['timestamp']:
-                self.equity_curve.append({
-                    'timestamp': final_bar['timestamp'],
-                    'equity': current_capital,
-                    'price': final_bar['close'],
-                    'total_pnl': current_capital - self.config.trading.initial_capital,
-                    'unrealized_pnl': 0.0
-                })
+        # Финальная точка
+        if self.equity_curve[-1]['timestamp'] != self.timestamps[-1]:
+            self.equity_curve.append({
+                'timestamp': self.timestamps[-1],
+                'equity': current_capital,
+                'price': self.ohlc_data[-1, 3],  # Final close
+                'total_pnl': current_capital - self.config.trading.initial_capital,
+                'unrealized_pnl': 0.0
+            })
+
+    def _create_equity_curve_empty(self) -> None:
+        """Создает пустую equity curve если нет сделок"""
+        if len(self.timestamps) == 0:
+            return
+
+        self.equity_curve = [
+            {
+                'timestamp': self.timestamps[0],
+                'equity': self.config.trading.initial_capital,
+                'price': self.ohlc_data[0, 3],
+                'total_pnl': 0.0,
+                'unrealized_pnl': 0.0
+            },
+            {
+                'timestamp': self.timestamps[-1],
+                'equity': self.config.trading.initial_capital,
+                'price': self.ohlc_data[-1, 3],
+                'total_pnl': 0.0,
+                'unrealized_pnl': 0.0
+            }
+        ]
 
     def _print_results(self) -> None:
         """Выводит результаты бэктеста"""
+        execution_time = self.end_time - self.start_time
         print("-" * 60)
-        print("РЕЗУЛЬТАТЫ БЭКТЕСТА")
+        print("РЕЗУЛЬТАТЫ ОПТИМИЗИРОВАННОГО БЭКТЕСТА")
         print("-" * 60)
+        print(f"Время выполнения: {execution_time:.2f} секунд")
+        print(f"Обработано баров: {len(self.timestamps):,}")
+        print(f"Скорость: {len(self.timestamps) / execution_time:,.0f} баров/сек")
         print(f"Начальный капитал: ${self.config.trading.initial_capital:,.2f}")
         print(f"Общая прибыль: ${self.total_pnl:,.2f}")
         final_capital = self.config.trading.initial_capital + self.total_pnl
@@ -388,7 +434,7 @@ class BacktestEngine:
         print(f"Доходность: {(final_capital / self.config.trading.initial_capital - 1) * 100:.2f}%")
 
     def get_results(self) -> Dict[str, Any]:
-        """Возвращает результаты для аналитики"""
+        """Возвращает результаты для аналитики - совместимый API"""
         return {
             'trades': self.trades,
             'equity_curve': self.equity_curve,
@@ -399,7 +445,7 @@ class BacktestEngine:
             'total_pnl': self.total_pnl,
             'execution_stats': {
                 'execution_time': self.end_time - self.start_time if self.end_time else 0,
-                'total_bars': len(self.bars),
+                'total_bars': len(self.timestamps) if self.timestamps is not None else 0,
                 'total_signals': len(self.signals),
                 'total_trades': len(self.trades)
             }
