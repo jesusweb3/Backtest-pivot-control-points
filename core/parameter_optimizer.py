@@ -6,7 +6,7 @@ from typing import List, Dict, Tuple, Any
 from dataclasses import dataclass
 import multiprocessing as mp
 
-from core.all_backtest_engine import BacktestEngine
+from core.all_backtest_engine import AllBacktestEngine
 from analytics.performance_analyzer import PerformanceAnalyzer
 from settings.settings import BacktestConfig
 
@@ -65,8 +65,8 @@ def run_single_optimization(task: OptimizationTask) -> OptimizationResult:
         config.pivot.left_bars = task.left_bars
         config.pivot.right_bars = task.right_bars
 
-        # Запускаем бэктест в тихом режиме (без вывода в консоль)
-        engine = BacktestEngine(config)
+        # Запускаем бэктест в тихом режиме с all движком
+        engine = AllBacktestEngine(config)
         backtest_success = engine.run_backtest(quiet_mode=True)
 
         if not backtest_success:

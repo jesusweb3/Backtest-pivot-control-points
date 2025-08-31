@@ -10,10 +10,10 @@ from scipy.signal import find_peaks
 from settings.settings import BacktestConfig
 
 
-class BacktestEngine:
+class AllBacktestEngine:
     """
-    Оптимизированный движок бэктестинга с vectorized операциями и кешем данных.
-    Использует numpy, scipy и кеширование для максимальной производительности.
+    Движок для массовой оптимизации (all backtest).
+    Использует кеширование данных, scipy и векторизацию для максимальной скорости.
     """
 
     # Глобальный кеш данных для всех экземпляров
@@ -21,11 +21,11 @@ class BacktestEngine:
 
     def __init__(self, config: BacktestConfig):
         self.config = config
-        self.quiet_mode = False  # Флаг тихого режима
+        self.quiet_mode = False
 
         # Numpy массивы для данных
         self.timestamps = None
-        self.ohlc_data = None  # [open, high, low, close]
+        self.ohlc_data = None
 
         # Результаты
         self.pivot_highs: List[Dict] = []
@@ -40,19 +40,19 @@ class BacktestEngine:
         self.total_pnl = 0.0
 
     def run_backtest(self, quiet_mode: bool = False) -> bool:
-        """Запускает полный цикл оптимизированного бэктестирования"""
+        """Запускает all backtest"""
         try:
-            self.quiet_mode = quiet_mode  # Сохраняем флаг для всех методов
+            self.quiet_mode = quiet_mode
             self.start_time = time.time()
 
-            # 1. Загружаем данные из кеша или создаем кеш
+            # 1. Загружаем данные из кеша
             if not self._load_data_cached():
                 return False
 
-            # 2. Супер-векторизованный расчет пивотов с scipy
+            # 2. Быстрый расчет пивотов с scipy
             pivot_high_indices, pivot_low_indices = self._calculate_pivots_scipy()
 
-            # 3. Конвертируем пивоты в список для совместимости
+            # 3. Конвертируем пивоты в legacy формат
             self._convert_pivots_to_legacy_format(pivot_high_indices, pivot_low_indices)
 
             # 4. Оптимизированная симуляция стратегии
@@ -63,7 +63,6 @@ class BacktestEngine:
 
             self.end_time = time.time()
 
-            # Выводим результаты только если не тихий режим
             if not quiet_mode:
                 self._print_results()
 
@@ -71,33 +70,32 @@ class BacktestEngine:
 
         except Exception as e:
             if not quiet_mode:
-                print(f"Ошибка бэктестирования: {e}")
+                print(f"Ошибка all бэктестирования: {e}")
                 import traceback
                 traceback.print_exc()
             return False
 
     def _load_data_cached(self) -> bool:
-        """Загружает данные из глобального кеша или создает кеш"""
+        """Загружает данные из глобального кеша"""
         try:
             csv_path = self.config.data.csv_path
 
-            # Проверяем наличие файла
             if not os.path.exists(csv_path):
                 print(f"Ошибка: Файл не найден: {csv_path}")
                 return False
 
             # Проверяем кеш
-            if csv_path not in BacktestEngine._data_cache:
+            if csv_path not in AllBacktestEngine._data_cache:
                 if not self.quiet_mode:
                     print(f"Загрузка данных в кеш: {csv_path}")
 
-                # Загружаем данные один раз для всех процессов
+                # Загружаем данные один раз
                 data = pd.read_csv(csv_path)
                 data['timestamp'] = pd.to_datetime(data['timestamp'])
                 data = data.sort_values('timestamp').reset_index(drop=True)
 
                 # Сохраняем в кеш как numpy массивы
-                BacktestEngine._data_cache[csv_path] = {
+                AllBacktestEngine._data_cache[csv_path] = {
                     'timestamps': data['timestamp'].values,
                     'ohlc_data': np.column_stack([
                         data['open'].values,
@@ -110,18 +108,14 @@ class BacktestEngine:
 
                 if not self.quiet_mode:
                     print(f"Кеш создан: {len(data)} баров")
-            else:
-                if not self.quiet_mode:
-                    print("Данные загружены из кеша")
 
             # Получаем данные из кеша
-            cached_data = BacktestEngine._data_cache[csv_path]
+            cached_data = AllBacktestEngine._data_cache[csv_path]
             self.timestamps = cached_data['timestamps']
             self.ohlc_data = cached_data['ohlc_data']
 
             if not self.quiet_mode:
-                print(f"Используется {len(self.timestamps)} баров")
-                print(f"Период: {self.timestamps[0]} - {self.timestamps[-1]}")
+                print(f"Используется {len(self.timestamps)} баров из кеша")
 
             return True
 
@@ -131,50 +125,35 @@ class BacktestEngine:
 
     @classmethod
     def clear_data_cache(cls):
-        """Очищает кеш данных (полезно для тестов или смены файлов)"""
+        """Очищает кеш данных"""
         cls._data_cache.clear()
 
     def _calculate_pivots_scipy(self) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Супер-векторизованный расчет пивотов с использованием scipy.signal
-        Значительно быстрее чем ручная реализация
-        """
+        """Быстрый расчет пивотов с scipy"""
         left_bars = self.config.pivot.left_bars
         right_bars = self.config.pivot.right_bars
-
-        # Минимальное расстояние между пивотами
         min_distance = left_bars + right_bars + 1
 
-        high_prices = self.ohlc_data[:, 1]  # High prices
-        low_prices = self.ohlc_data[:, 2]  # Low prices
+        high_prices = self.ohlc_data[:, 1]
+        low_prices = self.ohlc_data[:, 2]
 
-        # Находим пики (максимумы) для pivot highs
-        pivot_high_indices, _ = find_peaks(
-            high_prices,
-            distance=min_distance,
-            width=None  # Не ограничиваем ширину пика
-        )
+        # Находим пики с scipy
+        pivot_high_indices, _ = find_peaks(high_prices, distance=min_distance)
+        pivot_low_indices, _ = find_peaks(-low_prices, distance=min_distance)
 
-        # Находим пики перевернутого массива для pivot lows (минимумы)
-        pivot_low_indices, _ = find_peaks(
-            -low_prices,  # Инвертируем для поиска минимумов
-            distance=min_distance,
-            width=None
-        )
-
-        # Фильтруем пивоты с учетом left_bars и right_bars границ
+        # Фильтруем по границам
         valid_high_mask = (pivot_high_indices >= left_bars) & (pivot_high_indices < len(high_prices) - right_bars)
         pivot_high_indices = pivot_high_indices[valid_high_mask]
 
         valid_low_mask = (pivot_low_indices >= left_bars) & (pivot_low_indices < len(low_prices) - right_bars)
         pivot_low_indices = pivot_low_indices[valid_low_mask]
 
-        # Дополнительная проверка на соответствие критериям пивота
-        pivot_high_indices = BacktestEngine._validate_pivots_vectorized(
+        # Дополнительная проверка критериев
+        pivot_high_indices = AllBacktestEngine._validate_pivots_vectorized(
             pivot_high_indices, high_prices, left_bars, right_bars, find_maxima=True
         )
 
-        pivot_low_indices = BacktestEngine._validate_pivots_vectorized(
+        pivot_low_indices = AllBacktestEngine._validate_pivots_vectorized(
             pivot_low_indices, low_prices, left_bars, right_bars, find_maxima=False
         )
 
@@ -187,30 +166,23 @@ class BacktestEngine:
     @staticmethod
     def _validate_pivots_vectorized(candidate_indices: np.ndarray, prices: np.ndarray,
                                     left_bars: int, right_bars: int, find_maxima: bool) -> np.ndarray:
-        """
-        Векторизованная проверка пивотов на соответствие критериям
-        """
+        """Векторизованная проверка пивотов"""
         if len(candidate_indices) == 0:
             return candidate_indices
 
         valid_pivots = []
 
         for idx in candidate_indices:
-            # Получаем окно вокруг кандидата
             start_idx = max(0, idx - left_bars)
             end_idx = min(len(prices), idx + right_bars + 1)
             window = prices[start_idx:end_idx]
             candidate_price = prices[idx]
 
             if find_maxima:
-                # Для pivot high: должен быть строго больше всех соседей
-                # или равен максимуму и больше хотя бы одного соседа
                 neighbors = np.concatenate([window[:idx - start_idx], window[idx - start_idx + 1:]])
                 if len(neighbors) > 0 and candidate_price >= window.max() and candidate_price > neighbors.max():
                     valid_pivots.append(idx)
             else:
-                # Для pivot low: должен быть строго меньше всех соседей
-                # или равен минимуму и меньше хотя бы одного соседа
                 neighbors = np.concatenate([window[:idx - start_idx], window[idx - start_idx + 1:]])
                 if len(neighbors) > 0 and candidate_price <= window.min() and candidate_price < neighbors.min():
                     valid_pivots.append(idx)
@@ -219,7 +191,7 @@ class BacktestEngine:
 
     def _convert_pivots_to_legacy_format(self, pivot_high_indices: np.ndarray,
                                          pivot_low_indices: np.ndarray) -> None:
-        """Конвертирует numpy индексы в legacy формат для совместимости"""
+        """Конвертирует numpy индексы в legacy формат"""
         right_bars = self.config.pivot.right_bars
 
         # Pivot highs
@@ -229,7 +201,7 @@ class BacktestEngine:
                 confirmed_idx = idx + right_bars
                 self.pivot_highs.append({
                     'timestamp': self.timestamps[idx],
-                    'price': self.ohlc_data[idx, 1],  # High price
+                    'price': self.ohlc_data[idx, 1],
                     'confirmed_at': self.timestamps[confirmed_idx],
                     'bar_index': idx
                 })
@@ -241,19 +213,17 @@ class BacktestEngine:
                 confirmed_idx = idx + right_bars
                 self.pivot_lows.append({
                     'timestamp': self.timestamps[idx],
-                    'price': self.ohlc_data[idx, 2],  # Low price
+                    'price': self.ohlc_data[idx, 2],
                     'confirmed_at': self.timestamps[confirmed_idx],
                     'bar_index': idx
                 })
 
     def _simulate_strategy_optimized(self) -> None:
-        """
-        Оптимизированная симуляция стратегии с использованием numpy
-        """
+        """Оптимизированная симуляция стратегии"""
         self.signals = []
         self.trades = []
 
-        # Создаем массивы для быстрого поиска пивотов по времени подтверждения
+        # Быстрый поиск пивотов
         pivot_confirmations = {}
 
         for pivot in self.pivot_highs:
@@ -284,30 +254,28 @@ class BacktestEngine:
         current_position = None
         current_entry = None
 
-        # Векторизованный проход по барам
+        # Векторизованный проход
         for i, timestamp in enumerate(self.timestamps):
             current_high = self.ohlc_data[i, 1]
             current_low = self.ohlc_data[i, 2]
 
-            # 1. Проверяем подтверждение пивотов
+            # Проверяем подтверждение пивотов
             if timestamp in pivot_confirmations:
                 for pivot_event in pivot_confirmations[timestamp]:
                     if pivot_event['type'] == 'HIGH':
                         hprice = pivot_event['price']
                         le = True
-                    else:  # LOW
+                    else:
                         lprice = pivot_event['price']
                         se = True
 
-            # 2. Проверяем сигналы
+            # Проверяем сигналы
             if le and 0 < hprice < current_high and current_position != "LONG":
                 entry_price = hprice + self.config.trading.min_tick
 
-                # Закрываем SHORT если есть
                 if current_position == "SHORT":
                     self._close_position(current_entry, timestamp, entry_price, "LONG_SIGNAL")
 
-                # Открываем LONG
                 self._open_position("LONG", timestamp, entry_price)
                 current_position = "LONG"
                 current_entry = {'time': timestamp, 'price': entry_price}
@@ -316,17 +284,15 @@ class BacktestEngine:
             elif se and lprice > 0 and current_low < lprice and current_position != "SHORT":
                 entry_price = lprice - self.config.trading.min_tick
 
-                # Закрываем LONG если есть
                 if current_position == "LONG":
                     self._close_position(current_entry, timestamp, entry_price, "SHORT_SIGNAL")
 
-                # Открываем SHORT
                 self._open_position("SHORT", timestamp, entry_price)
                 current_position = "SHORT"
                 current_entry = {'time': timestamp, 'price': entry_price}
                 se = False
 
-            # 3. Деактивируем условия при пробое
+            # Деактивация
             if le and current_high > hprice and current_position == "LONG":
                 le = False
             if se and current_low < lprice and current_position == "SHORT":
@@ -337,7 +303,7 @@ class BacktestEngine:
             print(f"Совершено сделок: {len(self.trades)}")
 
     def _open_position(self, direction: str, timestamp, entry_price: float) -> None:
-        """Открывает позицию и записывает сигнал"""
+        """Открывает позицию"""
         self.signals.append({
             'timestamp': timestamp,
             'type': direction,
@@ -346,14 +312,13 @@ class BacktestEngine:
 
     def _close_position(self, entry_info: Dict, exit_time, exit_price: float,
                         exit_reason: str) -> None:
-        """Закрывает позицию и записывает сделку"""
+        """Закрывает позицию"""
         position_volume = self.config.trading.position_size * self.config.trading.leverage
 
-        # Определяем направление по цене входа vs выхода
         if exit_reason == "LONG_SIGNAL":
             direction = "SHORT"
             entry_type = "SHORT"
-        else:  # SHORT_SIGNAL
+        else:
             direction = "LONG"
             entry_type = "LONG"
 
@@ -378,7 +343,7 @@ class BacktestEngine:
             self._create_equity_curve_empty()
             return
 
-        # Векторизованный расчет PnL для всех сделок
+        # Векторизованный расчет
         trades_array = np.array([
             [trade['entry_price'], trade['exit_price'],
              1.0 if trade['entry_type'] == 'LONG' else -1.0]
@@ -387,76 +352,50 @@ class BacktestEngine:
 
         position_volume = self.config.trading.position_size * self.config.trading.leverage
 
-        # Векторизованный расчет изменения цен и PnL
         entry_prices = trades_array[:, 0]
         exit_prices = trades_array[:, 1]
         directions = trades_array[:, 2]
 
-        # Расчет процентного изменения с учетом направления
         price_changes = (exit_prices - entry_prices) / entry_prices * directions
-
-        # PnL до комиссий
         pnl_before_commission = position_volume * price_changes
-
-        # Комиссии
         total_commission = position_volume * self.config.trading.taker_commission * 2
-
-        # Итоговый PnL
         final_pnls = pnl_before_commission - total_commission
 
-        # Записываем результаты в сделки
+        # Записываем результаты
         for i, trade in enumerate(self.trades):
             trade['pnl'] = final_pnls[i]
             trade['commission'] = total_commission
 
         self.total_pnl = final_pnls.sum()
-        self._create_equity_curve_optimized()
+        self._create_equity_curve_minimal()
 
-    def _create_equity_curve_optimized(self) -> None:
-        """Создает оптимизированную кривую капитала"""
-        self.equity_curve = []
-        current_capital = self.config.trading.initial_capital
+    def _create_equity_curve_minimal(self) -> None:
+        """Минимальная equity curve для оптимизации"""
+        if not self.trades:
+            self._create_equity_curve_empty()
+            return
 
-        # Начальная точка
-        self.equity_curve.append({
-            'timestamp': self.timestamps[0],
-            'equity': current_capital,
-            'price': self.ohlc_data[0, 3],  # Close price
-            'total_pnl': 0.0,
-            'unrealized_pnl': 0.0
-        })
+        current_capital = self.config.trading.initial_capital + self.total_pnl
 
-        # Создаем индекс времени для быстрого поиска
-        timestamp_to_idx = {ts: i for i, ts in enumerate(self.timestamps)}
-
-        # Добавляем точки после каждой сделки
-        for trade in self.trades:
-            current_capital += trade['pnl']
-
-            # Быстрый поиск цены закрытия
-            bar_idx = timestamp_to_idx.get(trade['exit_time'])
-            close_price = self.ohlc_data[bar_idx, 3] if bar_idx is not None else trade['exit_price']
-
-            self.equity_curve.append({
-                'timestamp': trade['exit_time'],
-                'equity': current_capital,
-                'price': close_price,
-                'total_pnl': current_capital - self.config.trading.initial_capital,
+        self.equity_curve = [
+            {
+                'timestamp': self.timestamps[0],
+                'equity': self.config.trading.initial_capital,
+                'price': self.ohlc_data[0, 3],
+                'total_pnl': 0.0,
                 'unrealized_pnl': 0.0
-            })
-
-        # Финальная точка
-        if self.equity_curve[-1]['timestamp'] != self.timestamps[-1]:
-            self.equity_curve.append({
+            },
+            {
                 'timestamp': self.timestamps[-1],
                 'equity': current_capital,
-                'price': self.ohlc_data[-1, 3],  # Final close
-                'total_pnl': current_capital - self.config.trading.initial_capital,
+                'price': self.ohlc_data[-1, 3],
+                'total_pnl': self.total_pnl,
                 'unrealized_pnl': 0.0
-            })
+            }
+        ]
 
     def _create_equity_curve_empty(self) -> None:
-        """Создает пустую equity curve если нет сделок"""
+        """Пустая equity curve"""
         if len(self.timestamps) == 0:
             return
 
@@ -478,22 +417,17 @@ class BacktestEngine:
         ]
 
     def _print_results(self) -> None:
-        """Выводит результаты бэктеста"""
+        """Выводит результаты"""
         execution_time = self.end_time - self.start_time
         print("-" * 60)
-        print("РЕЗУЛЬТАТЫ ОПТИМИЗИРОВАННОГО БЭКТЕСТА")
+        print("РЕЗУЛЬТАТЫ ALL БЭКТЕСТА")
         print("-" * 60)
         print(f"Время выполнения: {execution_time:.2f} секунд")
         print(f"Обработано баров: {len(self.timestamps):,}")
         print(f"Скорость: {len(self.timestamps) / execution_time:,.0f} баров/сек")
-        print(f"Начальный капитал: ${self.config.trading.initial_capital:,.2f}")
-        print(f"Общая прибыль: ${self.total_pnl:,.2f}")
-        final_capital = self.config.trading.initial_capital + self.total_pnl
-        print(f"Итоговый капитал: ${final_capital:,.2f}")
-        print(f"Доходность: {(final_capital / self.config.trading.initial_capital - 1) * 100:.2f}%")
 
     def get_results(self) -> Dict[str, Any]:
-        """Возвращает результаты для аналитики - совместимый API"""
+        """Возвращает результаты"""
         return {
             'trades': self.trades,
             'equity_curve': self.equity_curve,
