@@ -6,7 +6,7 @@ from typing import List, Dict, Tuple, Any
 from dataclasses import dataclass
 import multiprocessing as mp
 
-from core.backtest_engine import BacktestEngine
+from core.all_backtest_engine import BacktestEngine
 from analytics.performance_analyzer import PerformanceAnalyzer
 from settings.settings import BacktestConfig
 
@@ -91,41 +91,9 @@ def run_single_optimization(task: OptimizationTask) -> OptimizationResult:
         performance_metrics = analyzer.calculate_all_metrics()
         execution_time = time.time() - start_time
 
-        # Сохраняем результаты (опционально для лучших)
+        # НЕ СОХРАНЯЕМ ДЕТАЛИЗИРОВАННЫЕ ФАЙЛЫ ВО ВРЕМЯ ОПТИМИЗАЦИИ
+        # Это будет делаться только для топ результатов после завершения оптимизации
         results_path = ""
-        save_condition = (performance_metrics['total_return'] > 0 if
-                          task.config_dict['optimization']['save_only_profitable']
-                          else True)
-
-        if save_condition:
-            import io
-            import sys
-            old_stdout = None
-
-            try:
-                # Заглушаем вывод при экспорте
-                old_stdout = sys.stdout
-                sys.stdout = io.StringIO()
-
-                from analytics.trade_recorder import TradeRecorder
-                recorder = TradeRecorder()
-
-                # Создаем уникальное имя файла
-                filename = f"optimization_{task.left_bars}-{task.right_bars}.xlsx"
-                results_path = recorder.export_trades_to_excel(
-                    trades=results['trades'],
-                    performance_metrics=performance_metrics,
-                    config=results['settings'],
-                    filename=filename
-                )
-
-            except (ImportError, OSError, PermissionError):
-                # Если не удалось сохранить - не критично
-                pass
-            finally:
-                # Восстанавливаем вывод в любом случае
-                if old_stdout is not None:
-                    sys.stdout = old_stdout
 
         return OptimizationResult(
             left_bars=task.left_bars,
@@ -200,6 +168,7 @@ class ParameterOptimizer:
         print(f"  Всего комбинаций: {self.total_tasks:,}")
         print(f"  Используется процессов: {self.max_workers}")
         print(f"  Сохранять только прибыльные: {self.config.optimization.save_only_profitable}")
+        print(f"  Топ результатов для детализации: {self.config.optimization.top_results_count}")
         print(f"  Метрика ранжирования: {self.config.optimization.ranking_metric}")
         print()
 
@@ -259,12 +228,6 @@ class ParameterOptimizer:
                 task_id += 1
 
         return tasks
-
-    def _estimate_execution_time(self) -> float:
-        """Оценивает время выполнения в минутах"""
-        # Предполагаем 4 секунды на задачу и делим на количество процессов
-        estimated_seconds = (self.total_tasks * 4) / self.max_workers
-        return estimated_seconds / 60
 
     def _print_progress(self):
         """Выводит прогресс выполнения в виде обновляющейся строки"""
@@ -327,6 +290,10 @@ class ParameterOptimizer:
 
         if not successful_results:
             return []
+
+        # Применяем фильтр "только прибыльные" если включен
+        if self.config.optimization.save_only_profitable:
+            successful_results = [r for r in successful_results if r.total_return > 0]
 
         # Сортируем по выбранной метрике (по убыванию)
         if sort_by == 'sharpe_ratio':

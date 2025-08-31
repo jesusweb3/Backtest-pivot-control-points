@@ -140,6 +140,11 @@ class BacktestVisualizer:
         ax_main.axhline(y=0, color='white', linestyle='-', alpha=0.5, linewidth=1)
         ax_main.set_facecolor('#2d2d2d')
 
+        # ИСПРАВЛЕНИЕ: Явно устанавливаем белый цвет для меток осей
+        ax_main.tick_params(colors='white', which='both')
+        ax_main.xaxis.label.set_color('white')
+        ax_main.yaxis.label.set_color('white')
+
         # ============= БЛОК МЕТРИК (правый верхний) =============
         final_pnl = cumulative_pnl[-1]
         max_pnl = np.max(cumulative_pnl)

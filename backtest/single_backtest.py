@@ -4,7 +4,7 @@ import time
 from typing import Dict, Any
 
 from settings.settings import BacktestConfig
-from core.backtest_engine import BacktestEngine
+from core.solo_backtest_engine import SoloBacktestEngine  # ИЗМЕНЕНО
 from analytics.performance_analyzer import PerformanceAnalyzer
 from analytics.trade_recorder import TradeRecorder
 from analytics.visualizer import BacktestVisualizer
@@ -15,6 +15,7 @@ class SingleBacktestRunner:
     """
     Оркестратор единичного бэктеста.
     Управляет полным пайплайном: выполнение → анализ → экспорт → визуализация.
+    Использует SoloBacktestEngine для максимальной точности.
     """
 
     def __init__(self, config: BacktestConfig):
@@ -33,7 +34,7 @@ class SingleBacktestRunner:
             self._print_header()
             self._print_configuration()
 
-            # Выполняем бэктест
+            # Выполняем бэктест с SOLO движком
             if not self._execute_backtest():
                 return False
 
@@ -69,7 +70,7 @@ class SingleBacktestRunner:
     def _print_header():
         """Выводит заголовок единичного бэктеста"""
         print("-" * 60)
-        print("ЗАПУСК ЕДИНИЧНОГО БЭКТЕСТА")
+        print("ЗАПУСК ЕДИНИЧНОГО БЭКТЕСТА (SOLO ENGINE)")
         print("-" * 60)
 
     def _print_configuration(self):
@@ -84,10 +85,11 @@ class SingleBacktestRunner:
         print()
 
     def _execute_backtest(self) -> bool:
-        """Выполняет бэктест"""
+        """Выполняет бэктест с использованием SOLO движка"""
         start_time = time.time()
 
-        engine = BacktestEngine(self.config)
+        # Используем SoloBacktestEngine для максимальной точности
+        engine = SoloBacktestEngine(self.config)
         backtest_success = engine.run_backtest()
 
         if not backtest_success:

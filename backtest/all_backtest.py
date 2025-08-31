@@ -59,9 +59,8 @@ class AllBacktestRunner:
             traceback.print_exc()
             return False
         finally:
-            # Останавливаем логирование и сохраняем лог
+            # Останавливаем логирование (без сохранения лога)
             self.logger.stop_logging()
-            self._save_console_log()
 
     @staticmethod
     def _print_header():
@@ -123,31 +122,28 @@ class AllBacktestRunner:
             self._create_optimization_charts(top_results)
 
     def _export_optimization_summary(self, results: List[OptimizationResult]):
-        """Экспортирует сводку результатов оптимизации в Excel"""
+        """Экспортирует сводку результатов оптимизации в Excel с красивым форматированием"""
         try:
             import pandas as pd
             from datetime import datetime
             import os
+            from openpyxl.styles import Alignment
 
-            # Подготавливаем данные для экспорта
+            # Подготавливаем данные для экспорта с русскими заголовками
             summary_data = []
             for result in results:
                 summary_data.append({
-                    'Left_Bars': result.left_bars,
-                    'Right_Bars': result.right_bars,
-                    'Total_Return_%': result.total_return,
-                    'Total_PnL_$': result.total_pnl,
-                    'Max_Drawdown_%': result.max_drawdown_percent,
-                    'Sharpe_Ratio': result.sharpe_ratio,
-                    'Profit_Factor': result.profit_factor,
-                    'Win_Rate_%': result.win_rate,
-                    'Total_Trades': result.total_trades,
-                    'Calmar_Ratio': result.calmar_ratio,
-                    'Sortino_Ratio': result.sortino_ratio,
-                    'Avg_Trade_$': result.avg_trade,
-                    'Expectancy_$': result.expectancy,
-                    'Execution_Time_s': result.execution_time,
-                    'Results_Path': result.results_path
+                    'Левые бары': result.left_bars,
+                    'Правые бары': result.right_bars,
+                    'Доходность %': result.total_return,
+                    'Общий PnL $': result.total_pnl,
+                    'Макс просадка %': result.max_drawdown_percent,
+                    'Коэфф. Шарпа': result.sharpe_ratio,
+                    'Профит-фактор': result.profit_factor,
+                    'Винрейт %': result.win_rate,
+                    'Всего сделок': result.total_trades,
+                    'Средняя сделка $': result.avg_trade,
+                    'Путь к результатам': result.results_path
                 })
 
             df = pd.DataFrame(summary_data)
@@ -161,9 +157,14 @@ class AllBacktestRunner:
             os.makedirs(results_dir, exist_ok=True)
             filepath = os.path.join(results_dir, filename)
 
-            # Сохраняем
+            # Сохраняем с красивым форматированием
             with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
-                df.to_excel(writer, sheet_name='Optimization_Summary', index=False)
+                # Лист с результатами
+                df.to_excel(writer, sheet_name='Результаты_Оптимизации', index=False)
+                worksheet = writer.sheets['Результаты_Оптимизации']
+
+                # Красивое форматирование как в solo backtest
+                self._format_optimization_summary_sheet(worksheet)
 
                 # Добавляем статистику оптимизации
                 stats_data = [
@@ -171,9 +172,9 @@ class AllBacktestRunner:
                     ('Всего комбинаций', self.config.get_total_combinations()),
                     ('Успешных результатов', len([r for r in results if r.success])),
                     ('Прибыльных комбинаций', len([r for r in results if r.total_return > 0])),
-                    ('Диапазон Left Bars',
+                    ('Диапазон левых баров',
                      f"{self.config.optimization.left_bars_range[0]}-{self.config.optimization.left_bars_range[1]}"),
-                    ('Диапазон Right Bars',
+                    ('Диапазон правых баров',
                      f"{self.config.optimization.right_bars_range[0]}-{self.config.optimization.right_bars_range[1]}"),
                     ('Метрика ранжирования', self.config.optimization.ranking_metric),
                     ('Максимум процессов', self.config.optimization.max_workers or 'Авто'),
@@ -181,15 +182,63 @@ class AllBacktestRunner:
                 ]
 
                 stats_df = pd.DataFrame(stats_data[1:], columns=stats_data[0])
-                stats_df.to_excel(writer, sheet_name='Optimization_Stats', index=False)
+                stats_df.to_excel(writer, sheet_name='Статистика_Оптимизации', index=False)
+
+                # Форматируем лист статистики
+                stats_worksheet = writer.sheets['Статистика_Оптимизации']
+                self._format_stats_sheet(stats_worksheet)
 
             print(f"Сводка оптимизации сохранена: {filepath}")
 
         except Exception as e:
             print(f"Ошибка экспорта сводки: {e}")
 
+    @staticmethod
+    def _format_optimization_summary_sheet(worksheet) -> None:
+        """Форматирует лист с результатами оптимизации"""
+        from openpyxl.styles import Alignment
+
+        # Закрепляем первую строку (заголовки)
+        worksheet.freeze_panes = 'A2'
+
+        # Автоматическая настройка ширины колонок
+        for column in worksheet.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+
+            for cell in column:
+                try:
+                    cell_length = len(str(cell.value)) if cell.value else 0
+                    if cell_length > max_length:
+                        max_length = cell_length
+                except (AttributeError, TypeError):
+                    pass
+
+            # Устанавливаем ширину с запасом, но не более 60 символов
+            adjusted_width = min(max_length + 2, 60)
+            worksheet.column_dimensions[column_letter].width = adjusted_width
+
+        # Выравнивание по центру для всех ячеек
+        for row in worksheet.iter_rows():
+            for cell in row:
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+
+    @staticmethod
+    def _format_stats_sheet(worksheet) -> None:
+        """Форматирует лист со статистикой"""
+        from openpyxl.styles import Alignment
+
+        # Настраиваем ширину колонок
+        worksheet.column_dimensions['A'].width = 25
+        worksheet.column_dimensions['B'].width = 20
+
+        # Выравнивание
+        for row in worksheet.iter_rows():
+            for cell in row:
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+
     def _create_optimization_charts(self, top_results: List[OptimizationResult]):
-        """Создает графики для лучших результатов оптимизации параллельно с прогресс-баром"""
+        """Создает графики для лучших результатов оптимизации"""
         try:
             from concurrent.futures import ProcessPoolExecutor, as_completed
             import multiprocessing as mp
@@ -248,7 +297,7 @@ class AllBacktestRunner:
     @staticmethod
     def _create_single_chart(result: OptimizationResult, config_dict: dict) -> bool:
         """
-        Создает графики для одного результата оптимизации
+        Создает графики и Excel файлы для одного результата оптимизации
         ВАЖНО: функция должна быть на верхнем уровне модуля для pickle
         """
         import io
@@ -257,8 +306,10 @@ class AllBacktestRunner:
 
         try:
             from settings.settings import BacktestConfig
-            from core.backtest_engine import BacktestEngine
+            from core.all_backtest_engine import AllBacktestEngine
             from analytics.visualizer import BacktestVisualizer
+            from analytics.performance_analyzer import PerformanceAnalyzer
+            from analytics.trade_recorder import TradeRecorder
 
             # Воссоздаем конфигурацию для этого результата
             result_config = BacktestConfig.from_dict(config_dict)
@@ -266,8 +317,8 @@ class AllBacktestRunner:
             result_config.pivot.right_bars = result.right_bars
             result_config.optimization.enable_optimization = False  # Отключаем оптимизацию
 
-            # Запускаем бэктест для получения данных
-            engine = BacktestEngine(result_config)
+            # Запускаем бэктест для получения данных с all движком
+            engine = AllBacktestEngine(result_config)
             backtest_success = engine.run_backtest(quiet_mode=True)
 
             if not backtest_success:
@@ -275,9 +326,26 @@ class AllBacktestRunner:
 
             results_data = engine.get_results()
 
-            # Заглушаем вывод при создании графиков
+            # Анализируем производительность
+            analyzer = PerformanceAnalyzer(
+                equity_curve=results_data['equity_curve'],
+                trades=results_data['trades'],
+                initial_capital=result_config.trading.initial_capital
+            )
+            performance_metrics = analyzer.calculate_all_metrics()
+
+            # Заглушаем вывод при создании файлов
             old_stdout = sys.stdout
             sys.stdout = io.StringIO()
+
+            # Создаем детализированный Excel файл для каждой комбинации
+            recorder = TradeRecorder()
+            recorder.export_trades_to_excel(
+                trades=results_data['trades'],
+                performance_metrics=performance_metrics,
+                config=results_data['settings'],
+                filename=f"optimization_{result.left_bars}-{result.right_bars}.xlsx"
+            )
 
             # Создаем графики в стандартной структуре папок (L-R/charts/)
             BacktestVisualizer.create_trade_analysis_chart(
@@ -302,30 +370,6 @@ class AllBacktestRunner:
             # Восстанавливаем вывод в любом случае
             if old_stdout is not None:
                 sys.stdout = old_stdout
-
-    def _save_console_log(self):
-        """Сохраняет консольный лог оптимизации в файл"""
-        try:
-            log_content = self.logger.get_log_content()
-            if log_content and self.optimizer:
-                # Создаем специальный лог для оптимизации в корневой папке results/
-                import os
-                from datetime import datetime
-
-                results_dir = "results"
-                os.makedirs(results_dir, exist_ok=True)
-
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                log_filename = f"optimization_log_{timestamp}.txt"
-                log_filepath = os.path.join(results_dir, log_filename)
-
-                with open(log_filepath, 'w', encoding='utf-8') as f:
-                    f.write(log_content)
-
-                print(f"Лог оптимизации сохранен: {log_filepath}")
-
-        except Exception as e:
-            print(f"Не удалось сохранить лог оптимизации: {e}")
 
     @staticmethod
     def _print_success():
