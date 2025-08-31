@@ -6,7 +6,7 @@ import os
 from typing import List, Dict, Any, Tuple
 import time
 
-from config.settings import BacktestConfig
+from settings.settings import BacktestConfig
 
 
 class BacktestEngine:
@@ -450,7 +450,7 @@ class BacktestEngine:
             'signals': self.signals,
             'pivot_highs': self.pivot_highs,
             'pivot_lows': self.pivot_lows,
-            'config': self.config.to_dict(),
+            'settings': self.config.to_dict(),
             'total_pnl': self.total_pnl,
             'execution_stats': {
                 'execution_time': self.end_time - self.start_time if self.end_time else 0,

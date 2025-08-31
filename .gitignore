@@ -64,8 +64,8 @@ logs/
 ehthumbs.db
 Thumbs.db
 
-# Configuration (uncomment if you want to ignore config files)
-# config/local_settings.py
+# Configuration (uncomment if you want to ignore settings files)
+# settings/local_settings.py
 
 # Temporary files
 *.tmp

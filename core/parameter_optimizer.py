@@ -8,7 +8,7 @@ import multiprocessing as mp
 
 from core.backtest_engine import BacktestEngine
 from analytics.performance_analyzer import PerformanceAnalyzer
-from config.settings import BacktestConfig
+from settings.settings import BacktestConfig
 
 
 @dataclass
@@ -115,7 +115,7 @@ def run_single_optimization(task: OptimizationTask) -> OptimizationResult:
                 results_path = recorder.export_trades_to_excel(
                     trades=results['trades'],
                     performance_metrics=performance_metrics,
-                    config=results['config'],
+                    config=results['settings'],
                     filename=filename
                 )
 
