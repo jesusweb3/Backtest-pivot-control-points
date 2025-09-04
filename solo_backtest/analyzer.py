@@ -1,4 +1,4 @@
-# analytics/performance_analyzer.py
+# solo_backtest/analyzer.py
 
 import numpy as np
 import pandas as pd
@@ -38,7 +38,6 @@ class PerformanceAnalyzer:
             # Риск-метрики
             'sharpe_ratio': self._calculate_sharpe_ratio(),
             'sortino_ratio': self._calculate_sortino_ratio(),
-            'calmar_ratio': self._calculate_calmar_ratio(),
             'volatility': self._calculate_volatility(),
 
             # Торговые метрики
@@ -70,7 +69,7 @@ class PerformanceAnalyzer:
         """Возвращает пустые метрики если нет данных"""
         return {key: 0.0 for key in [
             'total_return', 'annual_return', 'max_drawdown', 'max_drawdown_percent',
-            'sharpe_ratio', 'sortino_ratio', 'calmar_ratio', 'volatility',
+            'sharpe_ratio', 'sortino_ratio', 'volatility',
             'total_trades', 'winning_trades', 'losing_trades', 'win_rate',
             'profit_factor', 'avg_trade', 'avg_win', 'avg_loss',
             'largest_win', 'largest_loss', 'avg_trade_duration',
@@ -132,11 +131,17 @@ class PerformanceAnalyzer:
             return 0.0
 
         returns = self.equity_df['equity'].pct_change().dropna()
-        if returns.std() == 0:
+        if len(returns) == 0 or returns.std() == 0:
             return 0.0
 
         excess_returns = returns - risk_free_rate / 252  # Дневная безрисковая ставка
-        return excess_returns.mean() / returns.std() * np.sqrt(252)
+        sharpe = excess_returns.mean() / returns.std() * np.sqrt(252)
+
+        # Защита от NaN и бесконечности
+        if np.isnan(sharpe) or np.isinf(sharpe):
+            return 0.0
+
+        return sharpe
 
     def _calculate_sortino_ratio(self, risk_free_rate: float = 0.02) -> float:
         """Коэффициент Сортино"""

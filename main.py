@@ -24,12 +24,12 @@ def main() -> bool:
     # Выбираем режим работы по конфигурации
     if config.is_optimization_mode():
         print("🔥 РЕЖИМ ПАРАМЕТРИЧЕСКОЙ ОПТИМИЗАЦИИ")
-        from backtest.all_backtest import AllBacktestRunner
+        from all_backtest.runner import AllBacktestRunner
         runner = AllBacktestRunner(config)
     else:
         print("📊 РЕЖИМ ЕДИНИЧНОГО БЭКТЕСТА")
-        from backtest.single_backtest import SingleBacktestRunner
-        runner = SingleBacktestRunner(config)
+        from solo_backtest.runner import SoloBacktestRunner
+        runner = SoloBacktestRunner(config)
 
     # Запускаем выбранный режим
     return runner.run()

@@ -1,11 +1,61 @@
-# backtest/all_backtest.py
+# all_backtest/runner.py
 
 import time
+import sys
+from io import StringIO
 from typing import List, Optional
 
 from settings.settings import BacktestConfig
-from core.parameter_optimizer import ParameterOptimizer, OptimizationResult
-from backtest.console_manager import LiveLogger
+from all_backtest.optimizer import ParameterOptimizer, OptimizationResult
+from all_backtest.recorder import TradeRecorder
+
+
+class LiveLogger:
+    """
+    Простой логгер для дублирования живого вывода в буфер.
+    Пользователь видит весь прогресс в реальном времени,
+    а мы сохраняем точную копию в лог-файл.
+    """
+
+    def __init__(self):
+        self.log_buffer = StringIO()
+        self.original_stdout = sys.stdout
+        self.tee_output: Optional['TeeOutput'] = None
+
+    def start_logging(self):
+        """Начинает дублирование вывода в буфер и на экран"""
+        self.tee_output = TeeOutput(self.original_stdout, self.log_buffer)
+        sys.stdout = self.tee_output
+
+    def stop_logging(self):
+        """Останавливает логирование и возвращает оригинальный stdout"""
+        sys.stdout = self.original_stdout
+
+    def get_log_content(self) -> str:
+        """Возвращает весь перехваченный лог"""
+        return self.log_buffer.getvalue()
+
+
+class TeeOutput:
+    """Простая обертка для дублирования вывода в несколько потоков"""
+
+    def __init__(self, console_file, log_file):
+        self.console_file = console_file  # sys.stdout для экрана
+        self.log_file = log_file  # StringIO для буфера
+
+    def write(self, text):
+        """Записывает текст и на экран и в буфер"""
+        self.console_file.write(text)
+        self.log_file.write(text)
+
+    def flush(self):
+        """Очищает буферы"""
+        self.console_file.flush()
+        self.log_file.flush()
+
+    def __getattr__(self, name):
+        """Проксирует все остальные методы к console_file"""
+        return getattr(self.console_file, name)
 
 
 class AllBacktestRunner:
@@ -104,14 +154,43 @@ class AllBacktestRunner:
         print("ЭКСПОРТ РЕЗУЛЬТАТОВ ОПТИМИЗАЦИИ")
         print("-" * 60)
 
-        top_results = self.optimizer.get_top_results()
+        # Получаем ВСЕ результаты для сводки (включая убыточные)
+        all_results = self.optimizer.get_all_results_for_export()
 
-        if top_results:
-            # Создаем сводный отчет по оптимизации
-            self._export_optimization_summary(top_results)
+        if all_results:
+            # Экспортируем сводку со ВСЕМИ результатами
+            dict_results = []
+            for result in all_results:
+                dict_results.append({
+                    'left_bars': result.left_bars,
+                    'right_bars': result.right_bars,
+                    'success': result.success,
+                    'total_return': result.total_return,
+                    'total_pnl': result.total_pnl,
+                    'max_drawdown_percent': result.max_drawdown_percent,
+                    'sharpe_ratio': result.sharpe_ratio,
+                    'profit_factor': result.profit_factor,
+                    'win_rate': result.win_rate,
+                    'total_trades': result.total_trades,
+                    'sortino_ratio': result.sortino_ratio,
+                    'recovery_factor': result.recovery_factor,
+                    'avg_trade': result.avg_trade,
+                    'expectancy': result.expectancy,
+                    'execution_time': result.execution_time,
+                    'error_message': result.error_message
+                })
 
-            print(f"Экспорт завершен. Топ-{len(top_results)} результатов сохранены.")
+            TradeRecorder.export_optimization_summary(
+                optimization_results=dict_results,
+                config=self.config.to_dict()
+            )
+
+            profitable_count = len([r for r in all_results if r.total_return > 0])
+            print(f"Экспорт завершен. Всего результатов: {len(all_results)}")
+            print(f"Прибыльных комбинаций: {profitable_count}")
             print(f"Метрика ранжирования: {self.config.optimization.ranking_metric}")
+        else:
+            print("Нет результатов для экспорта")
 
     def _create_optimization_visualizations(self):
         """Создает графики для лучших результатов оптимизации"""
@@ -120,122 +199,6 @@ class AllBacktestRunner:
         if top_results:
             print("Создание графиков для всех топ результатов...")
             self._create_optimization_charts(top_results)
-
-    def _export_optimization_summary(self, results: List[OptimizationResult]):
-        """Экспортирует сводку результатов оптимизации в Excel с красивым форматированием"""
-        try:
-            import pandas as pd
-            from datetime import datetime
-            import os
-            from openpyxl.styles import Alignment
-
-            # Подготавливаем данные для экспорта с русскими заголовками
-            summary_data = []
-            for result in results:
-                summary_data.append({
-                    'Левые бары': result.left_bars,
-                    'Правые бары': result.right_bars,
-                    'Доходность %': result.total_return,
-                    'Общий PnL $': result.total_pnl,
-                    'Макс просадка %': result.max_drawdown_percent,
-                    'Коэфф. Шарпа': result.sharpe_ratio,
-                    'Профит-фактор': result.profit_factor,
-                    'Винрейт %': result.win_rate,
-                    'Всего сделок': result.total_trades,
-                    'Средняя сделка $': result.avg_trade,
-                    'Путь к результатам': result.results_path
-                })
-
-            df = pd.DataFrame(summary_data)
-
-            # Создаем имя файла
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"optimization_summary_{timestamp}.xlsx"
-
-            # Сохраняем в корневую папку results/
-            results_dir = "results"
-            os.makedirs(results_dir, exist_ok=True)
-            filepath = os.path.join(results_dir, filename)
-
-            # Сохраняем с красивым форматированием
-            with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
-                # Лист с результатами
-                df.to_excel(writer, sheet_name='Результаты_Оптимизации', index=False)
-                worksheet = writer.sheets['Результаты_Оптимизации']
-
-                # Красивое форматирование как в solo backtest
-                self._format_optimization_summary_sheet(worksheet)
-
-                # Добавляем статистику оптимизации
-                stats_data = [
-                    ('Параметр', 'Значение'),
-                    ('Всего комбинаций', self.config.get_total_combinations()),
-                    ('Успешных результатов', len([r for r in results if r.success])),
-                    ('Прибыльных комбинаций', len([r for r in results if r.total_return > 0])),
-                    ('Диапазон левых баров',
-                     f"{self.config.optimization.left_bars_range[0]}-{self.config.optimization.left_bars_range[1]}"),
-                    ('Диапазон правых баров',
-                     f"{self.config.optimization.right_bars_range[0]}-{self.config.optimization.right_bars_range[1]}"),
-                    ('Метрика ранжирования', self.config.optimization.ranking_metric),
-                    ('Максимум процессов', self.config.optimization.max_workers or 'Авто'),
-                    ('Сохранять только прибыльные', self.config.optimization.save_only_profitable)
-                ]
-
-                stats_df = pd.DataFrame(stats_data[1:], columns=stats_data[0])
-                stats_df.to_excel(writer, sheet_name='Статистика_Оптимизации', index=False)
-
-                # Форматируем лист статистики
-                stats_worksheet = writer.sheets['Статистика_Оптимизации']
-                self._format_stats_sheet(stats_worksheet)
-
-            print(f"Сводка оптимизации сохранена: {filepath}")
-
-        except Exception as e:
-            print(f"Ошибка экспорта сводки: {e}")
-
-    @staticmethod
-    def _format_optimization_summary_sheet(worksheet) -> None:
-        """Форматирует лист с результатами оптимизации"""
-        from openpyxl.styles import Alignment
-
-        # Закрепляем первую строку (заголовки)
-        worksheet.freeze_panes = 'A2'
-
-        # Автоматическая настройка ширины колонок
-        for column in worksheet.columns:
-            max_length = 0
-            column_letter = column[0].column_letter
-
-            for cell in column:
-                try:
-                    cell_length = len(str(cell.value)) if cell.value else 0
-                    if cell_length > max_length:
-                        max_length = cell_length
-                except (AttributeError, TypeError):
-                    pass
-
-            # Устанавливаем ширину с запасом, но не более 60 символов
-            adjusted_width = min(max_length + 2, 60)
-            worksheet.column_dimensions[column_letter].width = adjusted_width
-
-        # Выравнивание по центру для всех ячеек
-        for row in worksheet.iter_rows():
-            for cell in row:
-                cell.alignment = Alignment(horizontal='center', vertical='center')
-
-    @staticmethod
-    def _format_stats_sheet(worksheet) -> None:
-        """Форматирует лист со статистикой"""
-        from openpyxl.styles import Alignment
-
-        # Настраиваем ширину колонок
-        worksheet.column_dimensions['A'].width = 25
-        worksheet.column_dimensions['B'].width = 20
-
-        # Выравнивание
-        for row in worksheet.iter_rows():
-            for cell in row:
-                cell.alignment = Alignment(horizontal='center', vertical='center')
 
     def _create_optimization_charts(self, top_results: List[OptimizationResult]):
         """Создает графики для лучших результатов оптимизации"""
@@ -306,10 +269,10 @@ class AllBacktestRunner:
 
         try:
             from settings.settings import BacktestConfig
-            from core.all_backtest_engine import AllBacktestEngine
-            from analytics.visualizer import BacktestVisualizer
-            from analytics.performance_analyzer import PerformanceAnalyzer
-            from analytics.trade_recorder import TradeRecorder
+            from all_backtest.engine import AllBacktestEngine
+            from all_backtest.visualizer import BacktestVisualizer
+            from all_backtest.analyzer import PerformanceAnalyzer
+            from all_backtest.recorder import TradeRecorder
 
             # Воссоздаем конфигурацию для этого результата
             result_config = BacktestConfig.from_dict(config_dict)

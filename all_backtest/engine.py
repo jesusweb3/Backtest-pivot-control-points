@@ -1,11 +1,10 @@
-# core/all_backtest_engine.py
+# all_backtest/engine.py
 
 import pandas as pd
 import numpy as np
 import os
 from typing import List, Dict, Any, Tuple
 import time
-from scipy.signal import find_peaks
 
 from settings.settings import BacktestConfig
 
@@ -13,7 +12,8 @@ from settings.settings import BacktestConfig
 class AllBacktestEngine:
     """
     Движок для массовой оптимизации (all backtest).
-    Использует кеширование данных, scipy и векторизацию для максимальной скорости.
+    Использует кеширование данных и векторизацию для максимальной скорости.
+    БЕЗ scipy - только чистый numpy для сохранения точности логики.
     """
 
     # Глобальный кеш данных для всех экземпляров
@@ -49,8 +49,8 @@ class AllBacktestEngine:
             if not self._load_data_cached():
                 return False
 
-            # 2. Быстрый расчет пивотов с scipy
-            pivot_high_indices, pivot_low_indices = self._calculate_pivots_scipy()
+            # 2. Векторизованный расчет пивотов (БЕЗ scipy!)
+            pivot_high_indices, pivot_low_indices = self._calculate_pivots_vectorized()
 
             # 3. Конвертируем пивоты в legacy формат
             self._convert_pivots_to_legacy_format(pivot_high_indices, pivot_low_indices)
@@ -128,66 +128,59 @@ class AllBacktestEngine:
         """Очищает кеш данных"""
         cls._data_cache.clear()
 
-    def _calculate_pivots_scipy(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Быстрый расчет пивотов с scipy"""
+    def _calculate_pivots_vectorized(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Векторизованный расчет пивотов БЕЗ scipy - только numpy.
+        Точно такая же логика как в solo, но векторизованная.
+        """
         left_bars = self.config.pivot.left_bars
         right_bars = self.config.pivot.right_bars
-        min_distance = left_bars + right_bars + 1
 
-        high_prices = self.ohlc_data[:, 1]
-        low_prices = self.ohlc_data[:, 2]
+        high_prices = self.ohlc_data[:, 1]  # high column
+        low_prices = self.ohlc_data[:, 2]  # low column
 
-        # Находим пики с scipy
-        pivot_high_indices, _ = find_peaks(high_prices, distance=min_distance)
-        pivot_low_indices, _ = find_peaks(-low_prices, distance=min_distance)
+        # Находим индексы потенциальных пивотов
+        pivot_high_indices = []
+        pivot_low_indices = []
 
-        # Фильтруем по границам
-        valid_high_mask = (pivot_high_indices >= left_bars) & (pivot_high_indices < len(high_prices) - right_bars)
-        pivot_high_indices = pivot_high_indices[valid_high_mask]
+        # Проходим по всем барам, исключая границы (точно как в solo)
+        for i in range(left_bars, len(high_prices) - right_bars):
+            # Проверяем pivot high
+            current_high = high_prices[i]
 
-        valid_low_mask = (pivot_low_indices >= left_bars) & (pivot_low_indices < len(low_prices) - right_bars)
-        pivot_low_indices = pivot_low_indices[valid_low_mask]
+            # Левая сторона - все должны быть меньше или равны
+            left_highs = high_prices[i - left_bars:i]
+            left_condition = np.all(left_highs <= current_high)
 
-        # Дополнительная проверка критериев
-        pivot_high_indices = AllBacktestEngine._validate_pivots_vectorized(
-            pivot_high_indices, high_prices, left_bars, right_bars, find_maxima=True
-        )
+            # Правая сторона - все должны быть строго меньше
+            right_highs = high_prices[i + 1:i + right_bars + 1]
+            right_condition = np.all(right_highs < current_high)
 
-        pivot_low_indices = AllBacktestEngine._validate_pivots_vectorized(
-            pivot_low_indices, low_prices, left_bars, right_bars, find_maxima=False
-        )
+            if left_condition and right_condition:
+                pivot_high_indices.append(i)
+
+            # Проверяем pivot low
+            current_low = low_prices[i]
+
+            # Левая сторона - все должны быть больше или равны
+            left_lows = low_prices[i - left_bars:i]
+            left_condition = np.all(left_lows >= current_low)
+
+            # Правая сторона - все должны быть строго больше
+            right_lows = low_prices[i + 1:i + right_bars + 1]
+            right_condition = np.all(right_lows > current_low)
+
+            if left_condition and right_condition:
+                pivot_low_indices.append(i)
+
+        pivot_high_indices = np.array(pivot_high_indices, dtype=int)
+        pivot_low_indices = np.array(pivot_low_indices, dtype=int)
 
         if not self.quiet_mode:
             print(f"Найдено pivot highs: {len(pivot_high_indices)}")
             print(f"Найдено pivot lows: {len(pivot_low_indices)}")
 
         return pivot_high_indices, pivot_low_indices
-
-    @staticmethod
-    def _validate_pivots_vectorized(candidate_indices: np.ndarray, prices: np.ndarray,
-                                    left_bars: int, right_bars: int, find_maxima: bool) -> np.ndarray:
-        """Векторизованная проверка пивотов"""
-        if len(candidate_indices) == 0:
-            return candidate_indices
-
-        valid_pivots = []
-
-        for idx in candidate_indices:
-            start_idx = max(0, idx - left_bars)
-            end_idx = min(len(prices), idx + right_bars + 1)
-            window = prices[start_idx:end_idx]
-            candidate_price = prices[idx]
-
-            if find_maxima:
-                neighbors = np.concatenate([window[:idx - start_idx], window[idx - start_idx + 1:]])
-                if len(neighbors) > 0 and candidate_price >= window.max() and candidate_price > neighbors.max():
-                    valid_pivots.append(idx)
-            else:
-                neighbors = np.concatenate([window[:idx - start_idx], window[idx - start_idx + 1:]])
-                if len(neighbors) > 0 and candidate_price <= window.min() and candidate_price < neighbors.min():
-                    valid_pivots.append(idx)
-
-        return np.array(valid_pivots, dtype=int)
 
     def _convert_pivots_to_legacy_format(self, pivot_high_indices: np.ndarray,
                                          pivot_low_indices: np.ndarray) -> None:
@@ -370,29 +363,44 @@ class AllBacktestEngine:
         self._create_equity_curve_minimal()
 
     def _create_equity_curve_minimal(self) -> None:
-        """Минимальная equity curve для оптимизации"""
+        """Создает equity curve с точками после каждой сделки для корректного расчета метрик"""
         if not self.trades:
             self._create_equity_curve_empty()
             return
 
-        current_capital = self.config.trading.initial_capital + self.total_pnl
+        self.equity_curve = []
+        current_capital = self.config.trading.initial_capital
 
-        self.equity_curve = [
-            {
-                'timestamp': self.timestamps[0],
-                'equity': self.config.trading.initial_capital,
-                'price': self.ohlc_data[0, 3],
-                'total_pnl': 0.0,
+        # Начальная точка
+        self.equity_curve.append({
+            'timestamp': self.timestamps[0],
+            'equity': current_capital,
+            'price': self.ohlc_data[0, 3],
+            'total_pnl': 0.0,
+            'unrealized_pnl': 0.0
+        })
+
+        # Точки после каждой сделки для корректного расчета метрик
+        for trade in self.trades:
+            current_capital += trade['pnl']
+
+            self.equity_curve.append({
+                'timestamp': trade['exit_time'],
+                'equity': current_capital,
+                'price': self.ohlc_data[-1, 3],  # Используем последнюю цену
+                'total_pnl': current_capital - self.config.trading.initial_capital,
                 'unrealized_pnl': 0.0
-            },
-            {
+            })
+
+        # Финальная точка (если последняя сделка не на последнем баре)
+        if self.equity_curve[-1]['timestamp'] != self.timestamps[-1]:
+            self.equity_curve.append({
                 'timestamp': self.timestamps[-1],
                 'equity': current_capital,
                 'price': self.ohlc_data[-1, 3],
-                'total_pnl': self.total_pnl,
+                'total_pnl': current_capital - self.config.trading.initial_capital,
                 'unrealized_pnl': 0.0
-            }
-        ]
+            })
 
     def _create_equity_curve_empty(self) -> None:
         """Пустая equity curve"""

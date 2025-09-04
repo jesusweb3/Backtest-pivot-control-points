@@ -1,4 +1,4 @@
-# analytics/visualizer.py
+# solo_backtest/visualizer.py
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -37,7 +37,7 @@ class BacktestVisualizer:
     @staticmethod
     def _get_charts_folder(config: Dict) -> str:
 
-        from analytics.trade_recorder import TradeRecorder
+        from solo_backtest.recorder import TradeRecorder
         recorder = TradeRecorder()
         paths = recorder.get_results_paths(config)
         return paths['charts_folder']
@@ -58,7 +58,7 @@ class BacktestVisualizer:
 
         # Ресэмплируем по месяцам
         monthly_equity = df['equity'].resample('ME').last()
-        monthly_returns = monthly_equity.pct_change().dropna() * 100
+        monthly_returns = monthly_equity.pct_change(fill_method=None).dropna() * 100
 
         if monthly_returns.empty:
             return ""

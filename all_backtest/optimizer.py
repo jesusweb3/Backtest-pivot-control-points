@@ -1,4 +1,4 @@
-# core/parameter_optimizer.py
+# all_backtest/optimizer.py
 
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -6,8 +6,8 @@ from typing import List, Dict, Tuple, Any
 from dataclasses import dataclass
 import multiprocessing as mp
 
-from core.all_backtest_engine import AllBacktestEngine
-from analytics.performance_analyzer import PerformanceAnalyzer
+from all_backtest.engine import AllBacktestEngine
+from all_backtest.analyzer import PerformanceAnalyzer
 from settings.settings import BacktestConfig
 
 
@@ -37,7 +37,6 @@ class OptimizationResult:
     profit_factor: float = 0.0
     win_rate: float = 0.0
     total_trades: int = 0
-    calmar_ratio: float = 0.0
     execution_time: float = 0.0
 
     # Дополнительные метрики
@@ -101,13 +100,12 @@ def run_single_optimization(task: OptimizationTask) -> OptimizationResult:
             task_id=task.task_id,
             success=True,
             total_return=performance_metrics['total_return'],
-            total_pnl=performance_metrics.get('total_pnl', results['total_pnl']),
+            total_pnl=results['total_pnl'],
             max_drawdown_percent=performance_metrics['max_drawdown_percent'],
             sharpe_ratio=performance_metrics['sharpe_ratio'],
             profit_factor=performance_metrics['profit_factor'],
             win_rate=performance_metrics['win_rate'],
             total_trades=performance_metrics['total_trades'],
-            calmar_ratio=performance_metrics['calmar_ratio'],
             sortino_ratio=performance_metrics['sortino_ratio'],
             recovery_factor=performance_metrics['recovery_factor'],
             avg_trade=performance_metrics['avg_trade'],
@@ -275,6 +273,18 @@ class ParameterOptimizer:
                 print(f"Лучшая комбинация: L={best_result.left_bars}, R={best_result.right_bars} "
                       f"(ROI: {best_result.total_return:.2f}%)")
 
+    def get_all_results_for_export(self) -> List[OptimizationResult]:
+        """
+        Возвращает ВСЕ результаты для экспорта в сводку (включая убыточные)
+        """
+        successful_results = [r for r in self.optimization_results if r.success]
+
+        # Сортируем по total_return (убывание)
+        sorted_results = sorted(successful_results,
+                                key=lambda x: x.total_return,
+                                reverse=True)
+        return sorted_results
+
     def get_top_results(self, top_n: int = None,
                         sort_by: str = None) -> List[OptimizationResult]:
         """
@@ -291,23 +301,21 @@ class ParameterOptimizer:
         if not successful_results:
             return []
 
-        # Применяем фильтр "только прибыльные" если включен
-        if self.config.optimization.save_only_profitable:
-            successful_results = [r for r in successful_results if r.total_return > 0]
-
-        # Сортируем по выбранной метрике (по убыванию)
-        if sort_by == 'sharpe_ratio':
-            # Для Sharpe учитываем только положительные значения
-            successful_results = [r for r in successful_results if r.sharpe_ratio > 0]
+        # Применяем фильтр "только прибыльные" только для детализированных файлов
+        # НО для сводки показываем ВСЕ результаты
+        filtered_results = successful_results
+        if self.config.optimization.save_only_profitable and sort_by is not None:
+            # Фильтруем только если не запрашиваем все результаты для экспорта
+            filtered_results = [r for r in successful_results if r.total_return > 0]
 
         try:
-            sorted_results = sorted(successful_results,
+            sorted_results = sorted(filtered_results,
                                     key=lambda x: getattr(x, sort_by),
                                     reverse=True)
             return sorted_results[:top_n]
         except AttributeError:
             print(f"Ошибка: метрика '{sort_by}' не найдена. Используем 'total_return'")
-            sorted_results = sorted(successful_results,
+            sorted_results = sorted(filtered_results,
                                     key=lambda x: x.total_return,
                                     reverse=True)
             return sorted_results[:top_n]
@@ -320,6 +328,22 @@ class ParameterOptimizer:
         if sort_by is None:
             sort_by = self.config.optimization.ranking_metric
 
+        # Получаем все результаты для анализа
+        all_successful = [r for r in self.optimization_results if r.success]
+        profitable_results = [r for r in all_successful if r.total_return > 0]
+
+        print(f"\nАНАЛИЗ РЕЗУЛЬТАТОВ:")
+        print(f"  Всего успешных результатов: {len(all_successful)}")
+        print(f"  Прибыльных результатов: {len(profitable_results)}")
+
+        if len(all_successful) > 0:
+            best_result = max(all_successful, key=lambda x: x.total_return)
+            worst_result = min(all_successful, key=lambda x: x.total_return)
+            print(
+                f"  Лучший результат: {best_result.total_return:.2f}% (L={best_result.left_bars}, R={best_result.right_bars})")
+            print(
+                f"  Худший результат: {worst_result.total_return:.2f}% (L={worst_result.left_bars}, R={worst_result.right_bars})")
+
         top_results = self.get_top_results(self.config.optimization.top_results_count, sort_by)[:top_n]
 
         if not top_results:
@@ -327,10 +351,10 @@ class ParameterOptimizer:
             return
 
         print(f"\nТОП-{len(top_results)} КОМБИНАЦИЙ ПО МЕТРИКЕ '{sort_by.upper()}':")
-        print("-" * 120)
+        print("-" * 110)
         print(
-            f"{'#':<3} {'L':<3} {'R':<3} {'ROI%':<8} {'PnL$':<10} {'DD%':<7} {'Sharpe':<7} {'PF':<6} {'WR%':<6} {'Trades':<7} {'Calmar':<7}")
-        print("-" * 120)
+            f"{'#':<3} {'L':<3} {'R':<3} {'ROI%':<8} {'PnL$':<10} {'DD%':<7} {'Sharpe':<7} {'PF':<6} {'WR%':<6} {'Trades':<7}")
+        print("-" * 110)
 
         for i, result in enumerate(top_results, 1):
             print(f"{i:<3} "
@@ -342,7 +366,32 @@ class ParameterOptimizer:
                   f"{result.sharpe_ratio:<7.3f} "
                   f"{result.profit_factor:<6.2f} "
                   f"{result.win_rate:<6.1f} "
-                  f"{result.total_trades:<7} "
-                  f"{result.calmar_ratio:<7.3f}")
+                  f"{result.total_trades:<7}")
 
-        print("-" * 120)
+        print("-" * 110)
+
+    def convert_results_to_dict_list(self) -> List[Dict]:
+        """
+        Конвертирует OptimizationResult в словари для совместимости с recorder
+        """
+        dict_results = []
+        for result in self.optimization_results:
+            dict_results.append({
+                'left_bars': result.left_bars,
+                'right_bars': result.right_bars,
+                'success': result.success,
+                'total_return': result.total_return,
+                'total_pnl': result.total_pnl,
+                'max_drawdown_percent': result.max_drawdown_percent,
+                'sharpe_ratio': result.sharpe_ratio,
+                'profit_factor': result.profit_factor,
+                'win_rate': result.win_rate,
+                'total_trades': result.total_trades,
+                'sortino_ratio': result.sortino_ratio,
+                'recovery_factor': result.recovery_factor,
+                'avg_trade': result.avg_trade,
+                'expectancy': result.expectancy,
+                'execution_time': result.execution_time,
+                'error_message': result.error_message
+            })
+        return dict_results

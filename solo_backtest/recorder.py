@@ -1,4 +1,4 @@
-# analytics/trade_recorder.py
+# solo_backtest/recorder.py
 
 import pandas as pd
 from typing import List, Dict
@@ -184,29 +184,6 @@ class TradeRecorder:
         return df[final_columns] if final_columns else df
 
     @staticmethod
-    def _prepare_equity_dataframe(equity_curve: List[Dict]) -> pd.DataFrame:
-        """Подготавливает DataFrame с кривой капитала на русском языке"""
-        if not equity_curve:
-            return pd.DataFrame()
-
-        df = pd.DataFrame(equity_curve)
-
-        if 'timestamp' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-
-        column_mapping = {
-            'timestamp': 'Время',
-            'equity': 'Капитал ($)',
-            'price': 'Цена',
-            'total_pnl': 'Общий PnL ($)',
-            'unrealized_pnl': 'Нереализованный PnL ($)'
-        }
-
-        existing_columns = {old: new for old, new in column_mapping.items() if old in df.columns}
-        df = df.rename(columns=existing_columns)
-        return df
-
-    @staticmethod
     def _prepare_metrics_dataframe(metrics: Dict) -> pd.DataFrame:
         """Подготавливает DataFrame с метриками производительности на русском языке"""
         metrics_data = []
@@ -223,7 +200,6 @@ class TradeRecorder:
         metrics_data.extend([
             ('Риск', 'Коэффициент Шарпа', f"{metrics.get('sharpe_ratio', 0):.3f}"),
             ('Риск', 'Коэффициент Сортино', f"{metrics.get('sortino_ratio', 0):.3f}"),
-            ('Риск', 'Коэффициент Калмара', f"{metrics.get('calmar_ratio', 0):.3f}"),
             ('Риск', 'Волатильность (%)', f"{metrics.get('volatility', 0):.2f}"),
         ])
 
@@ -328,13 +304,6 @@ class TradeRecorder:
         for row in worksheet.iter_rows():
             for cell in row:
                 cell.alignment = Alignment(horizontal='center', vertical='center')
-
-    @staticmethod
-    def _format_equity_sheet(worksheet) -> None:
-        """Форматирует лист с кривой капитала"""
-        column_widths = {'A': 20, 'B': 15, 'C': 12, 'D': 15, 'E': 18}
-        for col, width in column_widths.items():
-            worksheet.column_dimensions[col].width = width
 
     @staticmethod
     def _format_metrics_sheet(worksheet) -> None:

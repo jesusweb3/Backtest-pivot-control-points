@@ -1,4 +1,4 @@
-# core/solo_backtest_engine.py
+# solo_backtest/engine.py
 
 import pandas as pd
 import numpy as np
